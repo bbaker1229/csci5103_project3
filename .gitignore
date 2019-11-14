@@ -54,3 +54,6 @@ dkms.conf
 # VScode configuration files
 .vscode/
 *.json
+
+# Ignore image files
+image.*
