@@ -40,14 +40,52 @@ int fs_format()
 
 void fs_debug()
 {
-	union fs_block block;
+	union fs_block super_block;
+	union fs_block inode_block;
+	union fs_block indirect_block;
+	int i, j, k;
 
-	disk_read(0,block.data);
+	disk_read(0,super_block.data);
 
 	printf("superblock:\n");
-	printf("    %d blocks\n",block.super.nblocks);
-	printf("    %d inode blocks\n",block.super.ninodeblocks);
-	printf("    %d inodes\n",block.super.ninodes);
+	if (super_block.super.magic == FS_MAGIC) {
+		printf("    magic number is valid\n");
+	} else {
+		printf("    magic number is invalid. aborting\n");
+		return;
+	}
+
+	printf("    %d blocks on disk\n",super_block.super.nblocks);
+	printf("    %d inode blocks\n",super_block.super.ninodeblocks);
+	printf("    %d inodes total\n",super_block.super.ninodes);
+
+	for ( i = 0; i < super_block.super.ninodeblocks; i++ ) {
+		disk_read((i + 1), inode_block.data);
+		for ( j = 0; j < INODES_PER_BLOCK; j++ ) {
+			if ( inode_block.inode[j].isvalid ) {
+				printf("inode %d:\n", ( i * INODES_PER_BLOCK ) + j);
+				printf("    size: %d bytes\n", inode_block.inode[j].size);
+				printf("    direct blocks: ");
+				for ( k = 0; k < POINTERS_PER_INODE; k++ ) {
+					if ( inode_block.inode[j].direct[k] != 0 ) {
+						printf("%d ", inode_block.inode[j].direct[k]);
+					}
+				}
+				printf("\n");
+				if ( inode_block.inode[j].indirect != 0 ) {
+					printf("    indirect block: %d\n", inode_block.inode[j].indirect);
+					disk_read(inode_block.inode[j].indirect, indirect_block.data);
+					printf("    indirect data blocks: ");
+					for (k = 0; k < POINTERS_PER_BLOCK; k++ ) {
+						if ( indirect_block.pointers[k] != 0 ) {
+							printf("%d ", indirect_block.pointers[k]);
+						}
+					}
+					printf("\n");
+				}
+			}
+		}
+	}
 }
 
 int fs_mount()
