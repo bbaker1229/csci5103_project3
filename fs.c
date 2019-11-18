@@ -6,11 +6,18 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #define FS_MAGIC           0xf0f03410
 #define INODES_PER_BLOCK   128
 #define POINTERS_PER_INODE 5
 #define POINTERS_PER_BLOCK 1024
+
+#define FREE 				0
+#define BUSY				1
+
+bool fs_mounted = false;
+char* freemap;
 
 struct fs_superblock {
 	int magic;
@@ -33,9 +40,52 @@ union fs_block {
 	char data[DISK_BLOCK_SIZE];
 };
 
+void inode_load(int inumber, struct fs_inode *inode)
+{
+	union fs_block inode_block;
+
+	disk_read(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+
+	*inode = inode_block.inode[inumber % INODES_PER_BLOCK];
+}
+
+void inode_save(int inumber, struct fs_inode *inode)
+{
+	union fs_block inode_block;
+
+	disk_read(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+
+	inode_block.inode[inumber % INODES_PER_BLOCK] = *inode;
+
+	disk_write(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+}
+
 int fs_format()
 {
-	return 0;
+	union fs_block super_block;
+	union fs_block empty_block;
+	int i;
+
+	// don't format if
+	if ( fs_mounted ) {
+		printf("fs_format: file system already mounted\n");
+		return 0;
+	}
+
+	memset(empty_block.data, 0, sizeof(empty_block));
+
+	super_block.super.magic = FS_MAGIC;
+	super_block.super.nblocks = disk_size();
+	super_block.super.ninodeblocks = disk_size() / 10 + 1;
+	super_block.super.ninodes = 0;
+
+	disk_write(0, super_block.data);
+
+	for ( i = 1; i < disk_size(); i++ ) {
+		disk_write(i, empty_block.data);
+	}
+
+	return 1;
 }
 
 void fs_debug()
@@ -90,17 +140,163 @@ void fs_debug()
 
 int fs_mount()
 {
-	return 0;
+	union fs_block super_block;
+	union fs_block inode_block;
+	union fs_block indirect_block;
+
+	int i,j,k;
+
+	// make sure there's not already a file system mounted
+	if (fs_mounted ) {
+		printf("fs_mount: file system already mounted\n");
+		return 0;
+	}
+
+	disk_read(0,super_block.data);
+
+	// make sure a file system exists on the disk
+	if ( super_block.super.magic != FS_MAGIC ) {
+		printf("fs_mount: file system invalid format\n");
+		return 0;
+	}
+
+	// create an array for our free block bitmap and zero it out
+	freemap = (char*) malloc(disk_size() * sizeof(char));
+	memset(freemap, FREE, sizeof(*freemap));
+
+	// we at least have an occupied super block and some inode blocks
+	memset(freemap, BUSY, 1 + super_block.super.ninodeblocks);
+
+	// for each inode, figure out direct blocks, indirect blocks, and indirect data blocks
+	for ( i = 0; i < super_block.super.ninodeblocks; i++ ) {
+		disk_read((i + 1), inode_block.data);
+		for ( j = 0; j < INODES_PER_BLOCK; j++ ) {
+			if ( inode_block.inode[j].isvalid ) {
+				for ( k = 0; k < POINTERS_PER_INODE; k++ ) {
+
+					if ( inode_block.inode[j].direct[k] != 0 ) {
+						// mark all used direct blocks as busy
+						freemap[inode_block.inode[j].direct[k]] = BUSY;
+					}
+				}
+
+				if ( inode_block.inode[j].indirect != 0 ) {
+					// mark indirect block as busy
+					freemap[inode_block.inode[j].indirect] = BUSY;
+
+					disk_read(inode_block.inode[j].indirect, indirect_block.data);
+
+					for (k = 0; k < POINTERS_PER_BLOCK; k++ ) {
+						if ( indirect_block.pointers[k] != 0 ) {
+							// mark indirect data blocks as busy
+							freemap[indirect_block.pointers[k]] = BUSY;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	fs_mounted = true;
+
+	return 1;
 }
 
 int fs_create()
 {
-	return -1;
+	union fs_block super_block;
+	struct fs_inode inode;
+	int i;
+	int inumber = -1;
+
+	if ( !fs_mounted ) {
+		printf("fs_create: can't create inode. no file system mounted\n");
+		return -1;
+	}
+
+	disk_read(0, super_block.data);
+
+	if ( super_block.super.ninodes >= super_block.super.ninodeblocks * INODES_PER_BLOCK ) {
+		printf("fs_create: no free inode spaces\n");
+		return -1;
+	}
+
+	// find a free inode slot
+	for ( i = 0; i < super_block.super.ninodes; i++ ) {
+		inode_load( i, &inode);
+		if (!inode.isvalid) {
+			// found a free slot, let's put our new inode there
+			inumber = i;
+			memset((char*)&inode, 0, sizeof(inode));
+			inode.isvalid = 1;
+			inode_save(inumber, &inode);
+
+			// update super_block with new inode number
+			super_block.super.ninodes++;
+			disk_write( 0, super_block.data);
+			break;
+		}
+	}
+
+	return inumber;
 }
 
 int fs_delete( int inumber )
 {
-	return 0;
+	union fs_block super_block;
+	struct fs_inode inode;
+	union fs_block indirect_block;
+	union fs_block empty_block;
+	int i;
+
+	// validate file system mounted
+	if ( !fs_mounted ) {
+		printf("fs_delete: can't delete inode. no file system mounted\n");
+		return 0;
+	}
+
+	// validate inumber
+	disk_read(0, super_block.data);
+	if (inumber >= super_block.super.ninodes) {
+		printf("fs_delete: can't delete inode. inode number must be less than %d\n",
+				super_block.super.ninodes);
+		return 0;
+	}
+
+	memset(empty_block.data, 0, sizeof(empty_block));
+
+	inode_load(inumber, &inode);
+
+	// release direct data
+	for (i = 0; i < POINTERS_PER_INODE; i++) {
+		if ( inode.direct[i] != 0 ) {
+			disk_write(inode.direct[i], empty_block.data);
+			freemap[inode.direct[i]] = FREE;
+		}
+	}
+
+	// check for indirect data
+	if ( inode.indirect != 0 ) {
+		disk_read(inode.indirect, indirect_block.data);
+
+		// clear indirect data blocks
+		for (i = 0; i < POINTERS_PER_BLOCK; i++) {
+			if (indirect_block.pointers[i] != 0) {
+				disk_write(indirect_block.pointers[i], empty_block.data);
+				freemap[indirect_block.pointers[i]] = FREE;
+			}
+		}
+
+		// clear the pointers themselves
+		disk_write(inode.indirect, empty_block.data);
+		freemap[indirect_block.pointers[i]] = FREE;
+	}
+
+	// update number of inodes
+	super_block.super.ninodes--;
+	disk_write(0, super_block.data);
+
+	return 1;
 }
 
 int fs_getsize( int inumber )
