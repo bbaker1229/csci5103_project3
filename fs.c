@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <sys/param.h>
 
 #define FS_MAGIC           0xf0f03410
 #define INODES_PER_BLOCK   128
@@ -162,7 +163,7 @@ int fs_mount()
 
 	// create an array for our free block bitmap and zero it out
 	freemap = (char*) malloc(disk_size() * sizeof(char));
-	memset(freemap, FREE, sizeof(*freemap));
+	memset(freemap, FREE, disk_size());
 
 	// we at least have an occupied super block and some inode blocks
 	memset(freemap, BUSY, 1 + super_block.super.ninodeblocks);
@@ -301,15 +302,100 @@ int fs_delete( int inumber )
 
 int fs_getsize( int inumber )
 {
-	return -1;
+	struct fs_inode inode;
+
+	if (!fs_mounted) {
+		printf("fs_getsize: no file system mounted\n");
+		return -1;
+	}
+
+	inode_load(inumber, &inode);
+
+	if (!inode.isvalid) {
+		printf("fs_getsize: invalid inode number\n");
+		return -1;
+	}
+
+	return inode.size;
 }
 
 int fs_read( int inumber, char *data, int length, int offset )
 {
-	return 0;
+	struct fs_inode inode;
+	int block_offset;
+	int byte_offset;
+	int block_number;
+	int bytes_read;
+
+	if (!fs_mounted) {
+		printf("fs_read: no file system mounted\n");
+		return -1;
+	}
+
+	inode_load(inumber, &inode);
+
+	if (!inode.isvalid) {
+		printf("fs_read: invalid inode number\n");
+		return -1;
+	}
+
+	if (inode.size < offset) {
+		printf("fs_read: invalid offset exceeds inode size: %d\n", inode.size);
+		return -1;
+	}
+
+	// make sure we don't try to read past the end of the inode
+	if (inode.size < offset + length ) {
+		length = inode.size - offset;
+	}
+
+	// translate starting offset to block terms
+	block_offset = offset / DISK_BLOCK_SIZE;
+	byte_offset = offset % DISK_BLOCK_SIZE;
+
+	do {
+		union fs_block block;
+		int bytes_to_read;
+
+		// find the block pointer and read the block
+		if ( block_offset < POINTERS_PER_INODE ) {
+			block_number = inode.direct[block_offset];
+		} else {
+			disk_read(inode.indirect, block.data);
+			block_number = block.pointers[block_offset - POINTERS_PER_INODE];
+		}
+		disk_read(block_number, block.data);
+
+		// figure out how many bytes we need out of this block
+		bytes_to_read = MIN(DISK_BLOCK_SIZE - byte_offset, length - bytes_read);
+
+		// copy data into the output buffer
+		strncpy(data + bytes_read, block.data + byte_offset, bytes_to_read);
+		bytes_read += bytes_to_read;
+
+		byte_offset = 0;
+		block_offset++;
+
+	} while ( bytes_read < length );
+
+	return bytes_read;
 }
 
 int fs_write( int inumber, const char *data, int length, int offset )
 {
+	struct fs_inode inode;
+
+	if (!fs_mounted) {
+		printf("fs_write: no file system mounted\n");
+		return -1;
+	}
+
+	inode_load(inumber, &inode);
+
+	if (!inode.isvalid) {
+		printf("fs_write: invalid inode number\n");
+		return -1;
+	}
+
 	return 0;
 }
