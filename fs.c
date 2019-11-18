@@ -217,11 +217,6 @@ int fs_create()
 
 	disk_read(0, super_block.data);
 
-	if ( super_block.super.ninodes >= super_block.super.ninodeblocks * INODES_PER_BLOCK ) {
-		printf("fs_create: no free inode spaces\n");
-		return -1;
-	}
-
 	// find a free inode slot
 	for ( i = 0; i < super_block.super.ninodes; i++ ) {
 		inode_load( i, &inode);
@@ -293,6 +288,10 @@ int fs_delete( int inumber )
 		freemap[indirect_block.pointers[i]] = FREE;
 	}
 
+	// delete the inode
+	memset(&inode, 0, sizeof(inode));
+	inode_save(inumber, &inode);
+
 	// update number of inodes
 	super_block.super.ninodes--;
 	disk_write(0, super_block.data);
@@ -322,25 +321,34 @@ int fs_getsize( int inumber )
 int fs_read( int inumber, char *data, int length, int offset )
 {
 	struct fs_inode inode;
+	union fs_block super_block;
 	int block_offset;
 	int byte_offset;
 	int block_number;
-	int bytes_read;
+	int bytes_read = 0;
 
 	if (!fs_mounted) {
 		printf("fs_read: no file system mounted\n");
 		return -1;
 	}
 
-	inode_load(inumber, &inode);
+	disk_read(0, super_block.data);
 
-	if (!inode.isvalid) {
-		printf("fs_read: invalid inode number\n");
+	if (inumber >= super_block.super.ninodes ) {
+		printf("fs_read: invalid inode number must be less than %d\n",
+				super_block.super.ninodes);
 		return -1;
 	}
 
-	if (inode.size < offset) {
-		printf("fs_read: invalid offset exceeds inode size: %d\n", inode.size);
+	inode_load(inumber, &inode);
+
+	if (!inode.isvalid) {
+		printf("fs_read: no inode data present for inode %d\n", inumber);
+		return -1;
+	}
+
+	// return here if the offset doesn't make sense
+	if ( offset >= inode.size ) {
 		return -1;
 	}
 
@@ -353,7 +361,8 @@ int fs_read( int inumber, char *data, int length, int offset )
 	block_offset = offset / DISK_BLOCK_SIZE;
 	byte_offset = offset % DISK_BLOCK_SIZE;
 
-	do {
+	while ( bytes_read < length ) {
+
 		union fs_block block;
 		int bytes_to_read;
 
@@ -375,8 +384,7 @@ int fs_read( int inumber, char *data, int length, int offset )
 
 		byte_offset = 0;
 		block_offset++;
-
-	} while ( bytes_read < length );
+	}
 
 	return bytes_read;
 }
@@ -384,18 +392,29 @@ int fs_read( int inumber, char *data, int length, int offset )
 int fs_write( int inumber, const char *data, int length, int offset )
 {
 	struct fs_inode inode;
+	union fs_block super_block;
 
 	if (!fs_mounted) {
 		printf("fs_write: no file system mounted\n");
 		return -1;
 	}
 
+	disk_read(0, super_block.data);
+
+	if (inumber >= super_block.super.ninodes ) {
+		printf("fs_write: invalid inode number must be less than %d\n",
+				super_block.super.ninodes);
+		return -1;
+	}
+
 	inode_load(inumber, &inode);
 
 	if (!inode.isvalid) {
-		printf("fs_write: invalid inode number\n");
+		printf("fs_write: no inode data present for inode %d\n", inumber);
 		return -1;
 	}
+
+
 
 	return 0;
 }
