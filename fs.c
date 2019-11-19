@@ -2,6 +2,7 @@
 #include "disk.h"
 
 #include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -45,7 +46,7 @@ void inode_load(int inumber, struct fs_inode *inode)
 {
 	union fs_block inode_block;
 
-	disk_read(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+	disk_read(1 + (inumber / INODES_PER_BLOCK), inode_block.data);
 
 	*inode = inode_block.inode[inumber % INODES_PER_BLOCK];
 }
@@ -54,11 +55,11 @@ void inode_save(int inumber, struct fs_inode *inode)
 {
 	union fs_block inode_block;
 
-	disk_read(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+	disk_read(1 + (inumber / INODES_PER_BLOCK), inode_block.data);
 
 	inode_block.inode[inumber % INODES_PER_BLOCK] = *inode;
 
-	disk_write(1 + inumber / INODES_PER_BLOCK, inode_block.data);
+	disk_write(1 + (inumber / INODES_PER_BLOCK), inode_block.data);
 }
 
 int fs_format()
@@ -66,6 +67,7 @@ int fs_format()
 	union fs_block super_block;
 	union fs_block empty_block;
 	int i;
+	char validate;
 
 	// don't format if
 	if ( fs_mounted ) {
@@ -73,11 +75,24 @@ int fs_format()
 		return 0;
 	}
 
+	disk_read(0,super_block.data);
+
+	if (super_block.super.magic == FS_MAGIC) {
+		printf("This disk has already been formated.\n");
+		printf("Reformatting will erase the contents.\n");
+		printf("Continue? (y/n) > ");
+		scanf("%c", &validate);
+		if (validate != 'y') {
+			printf("fs_format: abort\n");
+			return 0;
+		}
+	}
+
 	memset(empty_block.data, 0, sizeof(empty_block));
 
 	super_block.super.magic = FS_MAGIC;
 	super_block.super.nblocks = disk_size();
-	super_block.super.ninodeblocks = disk_size() / 10 + 1;
+	super_block.super.ninodeblocks = ceil(disk_size() / 10);
 	super_block.super.ninodes = 0;
 
 	disk_write(0, super_block.data);
@@ -217,8 +232,13 @@ int fs_create()
 
 	disk_read(0, super_block.data);
 
+	if (super_block.super.ninodeblocks == super_block.super.ninodes) {
+		printf("inode table is full\n");
+		return inumber;
+	}
+
 	// find a free inode slot
-	for ( i = 0; i < super_block.super.ninodes; i++ ) {
+	for ( i = 0; i < super_block.super.ninodeblocks; i++ ) {
 		inode_load( i, &inode);
 		if (!inode.isvalid) {
 			// found a free slot, let's put our new inode there
@@ -262,6 +282,11 @@ int fs_delete( int inumber )
 	memset(empty_block.data, 0, sizeof(empty_block));
 
 	inode_load(inumber, &inode);
+
+	if (!inode.isvalid) {
+		printf("inode is not valid. Abort.\n");
+		return 0;
+	}
 
 	// release direct data
 	for (i = 0; i < POINTERS_PER_INODE; i++) {
@@ -329,7 +354,7 @@ int fs_read( int inumber, char *data, int length, int offset )
 
 	if (!fs_mounted) {
 		printf("fs_read: no file system mounted\n");
-		return -1;
+		return 0;
 	}
 
 	disk_read(0, super_block.data);
@@ -337,19 +362,19 @@ int fs_read( int inumber, char *data, int length, int offset )
 	if (inumber >= super_block.super.ninodes ) {
 		printf("fs_read: invalid inode number must be less than %d\n",
 				super_block.super.ninodes);
-		return -1;
+		return 0;
 	}
 
 	inode_load(inumber, &inode);
 
 	if (!inode.isvalid) {
 		printf("fs_read: no inode data present for inode %d\n", inumber);
-		return -1;
+		return 0;
 	}
 
 	// return here if the offset doesn't make sense
 	if ( offset >= inode.size ) {
-		return -1;
+		return 0;
 	}
 
 	// make sure we don't try to read past the end of the inode
@@ -393,10 +418,11 @@ int fs_write( int inumber, const char *data, int length, int offset )
 {
 	struct fs_inode inode;
 	union fs_block super_block;
+	int bytes_written = 0;
 
 	if (!fs_mounted) {
 		printf("fs_write: no file system mounted\n");
-		return -1;
+		return 0;
 	}
 
 	disk_read(0, super_block.data);
@@ -404,17 +430,20 @@ int fs_write( int inumber, const char *data, int length, int offset )
 	if (inumber >= super_block.super.ninodes ) {
 		printf("fs_write: invalid inode number must be less than %d\n",
 				super_block.super.ninodes);
-		return -1;
+		return 0;
 	}
 
 	inode_load(inumber, &inode);
 
 	if (!inode.isvalid) {
 		printf("fs_write: no inode data present for inode %d\n", inumber);
-		return -1;
+		return 0;
 	}
 
+	// don't write more than an inode can handle
+
+	// don't write more than the rest of the disk can handle
 
 
-	return 0;
+	return bytes_written;
 }
