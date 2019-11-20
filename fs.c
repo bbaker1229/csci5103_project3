@@ -62,12 +62,33 @@ void inode_save(int inumber, struct fs_inode *inode)
 	disk_write(1 + (inumber / INODES_PER_BLOCK), inode_block.data);
 }
 
+int get_inode_cnt()
+{
+	union fs_block super_block;
+	union fs_block inode_block;
+	int i, j;
+	int cnt = 0;
+
+	disk_read(0,super_block.data);
+
+	for ( i = 0; i < super_block.super.ninodeblocks; i++ ) {
+		disk_read((i + 1), inode_block.data);
+		for ( j = 0; j < INODES_PER_BLOCK; j++ ) {
+			if ( inode_block.inode[j].isvalid ) {
+				cnt++;
+			}
+		}
+	}
+	return cnt;
+}
+
 int fs_format()
 {
 	union fs_block super_block;
 	union fs_block empty_block;
 	int i;
 	char validate;
+	int inode_val;
 
 	// don't format if
 	if ( fs_mounted ) {
@@ -92,8 +113,12 @@ int fs_format()
 
 	super_block.super.magic = FS_MAGIC;
 	super_block.super.nblocks = disk_size();
-	super_block.super.ninodeblocks = ceil(disk_size() / 10);
-	super_block.super.ninodes = 0;
+	inode_val = ceil(disk_size() / 10);
+	if (inode_val == 0) {
+		inode_val = 1; // create at least 1 inode block
+	}
+	super_block.super.ninodeblocks = inode_val;
+	super_block.super.ninodes = inode_val * INODES_PER_BLOCK;
 
 	disk_write(0, super_block.data);
 
@@ -232,13 +257,13 @@ int fs_create()
 
 	disk_read(0, super_block.data);
 
-	if (super_block.super.ninodeblocks == super_block.super.ninodes) {
+	if (get_inode_cnt() == super_block.super.ninodes) {
 		printf("inode table is full\n");
 		return inumber;
 	}
 
 	// find a free inode slot
-	for ( i = 0; i < super_block.super.ninodeblocks; i++ ) {
+	for ( i = 0; i < super_block.super.ninodeblocks * INODES_PER_BLOCK; i++ ) {
 		inode_load( i, &inode);
 		if (!inode.isvalid) {
 			// found a free slot, let's put our new inode there
@@ -248,8 +273,7 @@ int fs_create()
 			inode_save(inumber, &inode);
 
 			// update super_block with new inode number
-			super_block.super.ninodes++;
-			disk_write( 0, super_block.data);
+			//disk_write( 0, super_block.data);
 			break;
 		}
 	}
@@ -318,8 +342,7 @@ int fs_delete( int inumber )
 	inode_save(inumber, &inode);
 
 	// update number of inodes
-	super_block.super.ninodes--;
-	disk_write(0, super_block.data);
+	//disk_write(0, super_block.data);
 
 	return 1;
 }
