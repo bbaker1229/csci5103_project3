@@ -82,6 +82,18 @@ int get_inode_cnt()
 	return cnt;
 }
 
+int find_free_block()
+{
+	int i;
+
+	for (i = 0; i < disk_size(); i++ ) {
+		if (freemap[i] != BUSY) {
+			return i;
+		}
+	}
+	return -1;
+}
+
 int fs_format()
 {
 	union fs_block super_block;
@@ -270,6 +282,7 @@ int fs_create()
 			inumber = i;
 			memset((char*)&inode, 0, sizeof(inode));
 			inode.isvalid = 1;
+			inode.indirect = 0;
 			inode_save(inumber, &inode);
 
 			// update super_block with new inode number
@@ -441,7 +454,11 @@ int fs_write( int inumber, const char *data, int length, int offset )
 {
 	struct fs_inode inode;
 	union fs_block super_block;
+	union fs_block indirect_block;
+	int block_offset = 0;
+	int byte_offset;
 	int bytes_written = 0;
+	int i;
 
 	if (!fs_mounted) {
 		printf("fs_write: no file system mounted\n");
@@ -463,10 +480,70 @@ int fs_write( int inumber, const char *data, int length, int offset )
 		return 0;
 	}
 
-	// don't write more than an inode can handle
+	// translate starting offset to block terms
+	for (i = 0; i < POINTERS_PER_INODE; i++) {
+		if (inode.direct[i] > 0) {
+			block_offset++;
+		}
+	}
+	if (inode.indirect) {
+		disk_read(inode.indirect, indirect_block.data);
+		for (i = 0; i < POINTERS_PER_BLOCK; i++) {
+			if (indirect_block.pointers[i] > 0) {
+				block_offset++;
+			}
+		}
+	}
 
-	// don't write more than the rest of the disk can handle
+	byte_offset = offset;
 
+	while ( bytes_written < length ) {
 
+		union fs_block data_block;
+		int bytes_to_write;
+		int write_block;
+
+		write_block = find_free_block();
+
+		if (write_block < 0) {
+			printf("fs_write: disk is full\n");
+			return 0;
+		}
+
+		// figure out how many bytes we need to write to this block
+		bytes_to_write = MIN(DISK_BLOCK_SIZE, length - bytes_written);
+
+		// copy data from the input buffer
+		strncpy(data_block.data, data + bytes_written, bytes_to_write);
+
+		// Fill direct inodes first
+		if (block_offset < POINTERS_PER_INODE ) {
+			inode.direct[block_offset] = write_block;
+		} else { // Now fill indirect inodes
+			if (!inode.indirect) {
+				inode.indirect = write_block;
+				memset(indirect_block.data, 0, sizeof(indirect_block));
+				disk_write(write_block,indirect_block.data);
+				freemap[write_block] = BUSY;
+				write_block = find_free_block(); // Find a new write block
+				if (write_block < 0) {
+					printf("fs_write: disk is full\n");
+					return 0;
+				}
+			}
+			disk_read(inode.indirect, indirect_block.data);
+			indirect_block.pointers[block_offset - POINTERS_PER_INODE] = write_block;
+			disk_write(inode.indirect, indirect_block.data);
+		}
+		disk_write (write_block, data_block.data);
+		freemap[write_block] = BUSY;
+
+		bytes_written += bytes_to_write;
+
+		byte_offset =+ byte_offset;
+		block_offset++;
+	}
+	inode.size = inode.size + bytes_written;
+	inode_save(inumber, &inode);
 	return bytes_written;
 }
