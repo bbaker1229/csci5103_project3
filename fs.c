@@ -382,6 +382,7 @@ int fs_delete( int inumber )
 	// delete the inode and save it
 	memset(&inode, 0, sizeof(inode));
 	inode_save(inumber, &inode);
+	freemap[0] = BUSY;
 
 	return 1;
 }
