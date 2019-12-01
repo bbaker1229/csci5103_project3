@@ -97,7 +97,7 @@ int find_free_block()
 {
 	int i;
 
-	for (i = 0; i < disk_size(); i++ ) {
+	for (i = 1; i < disk_size(); i++ ) {
 		if (freemap[i] != BUSY) {
 			return i;
 		}
