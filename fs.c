@@ -376,7 +376,7 @@ int fs_delete( int inumber )
 
 		// clear the indirect pointers themselves from freemap and overwrite with empty data
 		disk_write(inode.indirect, empty_block.data);
-		freemap[indirect_block.pointers[i]] = FREE;
+		freemap[inode.indirect] = FREE;
 	}
 
 	// delete the inode and save it
